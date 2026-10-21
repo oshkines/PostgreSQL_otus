@@ -1,126 +1,125 @@
-# Домашнее задание 1: PostgreSQL в Docker
+# Домашнее задание 2: Перенос данных PostgreSQL
 
 ## Цель
-Развернуть PostgreSQL в Docker с внешним подключением и устойчивым хранением данных (volume) для воспроизводимого тестового стенда.
+Перенести каталог данных PostgreSQL на дополнительный диск и восстановить работоспособность кластера при нехватке места на системном диске.
 
 ## Ход выполнения
 
-### 1. Подготовка среды
-Установлен Docker Engine на ВМ с Ubuntu 24.04 (сервер Aeza). Создан каталог для данных на хосте и выданы права пользователю postgres (UID 999), чтобы контейнер мог писать данные:
+### 1. Установка и проверка PostgreSQL
+PostgreSQL 16 уже был установлен на ВМ (Ubuntu 24.04). Проверена работа кластера и его статус.
 
 ```bash
-sudo mkdir -p /var/lib/postgresql_docker
-sudo chown -R 999:999 /var/lib/postgresql_docker
+sudo apt update
+sudo apt install postgresql postgresql-contrib -y
+pg_lsclusters
 ```
 
-![Скриншот установки Docker](images/img-2026-10-18-18-58-14.png)
+![Скриншот sudo apt update](images/sudo-apt-update.png)
 
-![Скриншот установки Docker 2](images/img-2026-10-18-18-59-18.png)
+![Скриншот sudo apt install postgresql postgresql contrib -y](images/sudo-apt-install-postgresql-postgresql-contrib-y.png)
 
-![Скриншот установки Docker 3](images/img-2026-10-18-19-00-06.png)
+![Скриншот sudo apt install postgresql postgresql contrib -y continue](images/sudo-apt-install-postgresql-postgresql-contrib-y-2.png)
 
-![Скриншот установки Docker 4](images/img-2026-10-18-19-00-50.png)
 
-![Скриншот установки Docker 5](images/img-2026-10-18-19-10-13.png)
-
-![Скриншот установки Docker 6](images/img-2026-10-18-19-10-39.png)
-
-![Скриншот установки Docker 7](images/img-2026-10-18-19-11-33.png)
-
-### 2. Запуск сервера PostgreSQL
-Создана сеть `pg-net` для связи контейнеров. Запущен контейнер с сервером, проброшен порт 5432 и смонтирован volume:
+### 2. Создание тестовой таблицы
+Под пользователем postgres создана таблица test и добавлены две строки.
 
 ```bash
-sudo docker network create pg-net
-
-sudo docker run -d \
-  --name pg-server \
-  --network pg-net \
-  -e POSTGRES_PASSWORD=MyStrongPass123 \
-  -p 5432:5432 \
-  -v /var/lib/postgresql_docker:/var/lib/postgresql/data \
-  postgres:16
-```
-
-![Скриншот запуск контейнера pg-server](images/img-2026-10-18-19-12-15.png)
-
-![Скриншот запуск контейнера pg-server 2](images/img-2026-10-18-19-12-29.png)
-
-![Скриншот запуск контейнера pg-server 3](images/img-2026-10-18-19-12-54.png)
-
-![Скриншот запуск контейнера pg-server 4](images/img-2026-10-18-19-13-08.png)
-
-![Скриншот запуск контейнера pg-server 5](images/img-2026-10-18-19-23-10.png)
-
-![Скриншот запуск контейнера pg-server 6](images/img-2026-10-18-19-23-57.png)
-
-### 3. Подключение из контейнера-клиента и создание данных
-Запущен временный контейнер с `psql`, подключен к серверу по имени `pg-server`. Выполнены SQL-команды для создания таблицы `orders_test` и вставки двух строк:
-
-```sql
-CREATE TABLE orders_test (
+CREATE TABLE test (
     id SERIAL PRIMARY KEY,
-    customer_name VARCHAR(100),
-    amount DECIMAL(10, 2)
+    name VARCHAR(50)
 );
-
-INSERT INTO orders_test (customer_name, amount) 
-VALUES 
-    ('Ivan Petrov', 1500.00), 
-    ('Maria Sidorova', 2750.50);
+INSERT INTO test (name) VALUES ('Row 1'), ('Row 2');
 ```
 
-![ENTER POSTGRE](images/img-2026-10-18-19-25-14.png)
+![Скриншот pg_lsclusters](images/pg_lsclusters.png)
 
-![CREATE TABLE](images/img-2026-10-18-19-25-54.png)
+![Скриншот sudo -u postgres psql](images/sudo-u-postgres-psql.png)
 
-![CREATE TABLE 2](images/img-2026-10-18-19-26-20.png)
+![Скриншот Select test](images/Select-test.png)
 
-![CREATE TABLE 3](images/img-2026-10-18-19-30-35.png)
+![Скриншот Insert](images/Insert.png)
 
-![SELECT TABLE](images/img-2026-10-18-19-31-09.png)
+![Скриншот Select](images/Select2.png)
 
-### 4. Подключение извне (с рабочего компьютера)
-На Windows 11 установлен pgAdmin 4. Настроено подключение к серверу Aeza по внешнему IP-адресу и порту 5432. Выполнен проверочный запрос `SELECT * FROM orders_test;`, данные успешно получены.
 
-![SELECT TABLE 2](images/img-2026-10-18-19-37-12.png)
-
-![SELECT TABLE 3](images/img-2026-10-18-19-37-56.png)
-
-![SELECT TABLE 4](images/img-2026-10-18-19-38-27.png)
-
-### 5. Проверка сохранности данных
-Контейнер `pg-server` был остановлен и удален:
+### 3. Остановка кластера
+Кластер PostgreSQL остановлен штатной командой перед переносом данных.
 
 ```bash
-sudo docker rm -f pg-server
+sudo pg_ctlcluster 16 main stop
+pg_lsclusters
 ```
 
-Затем контейнер создан заново с использованием того же каталога `/var/lib/postgresql_docker`:
+![Скриншот Stop Cluster](images/StopCluster.png)
+
+
+### 4. Создание дополнительного диска (Loop-устройство)
+Важное примечание: В панели управления Aeza отсутствует возможность подключения дополнительного физического диска (доступно только расширение основного). Для выполнения задания был создан виртуальный loop-диск размером 10 ГБ, который эмулирует физический носитель.
 
 ```bash
-sudo docker run -d \
-  --name pg-server \
-  --network pg-net \
-  -e POSTGRES_PASSWORD=MyStrongPass123 \
-  -p 5432:5432 \
-  -v /var/lib/postgresql_docker:/var/lib/postgresql/data \
-  postgres:16
+sudo fallocate -l 10G /disk10.img
+sudo losetup -fP /disk10.img
 ```
 
-Проверка данных из контейнера-клиента показала, что строки сохранились:
+![Скриншот Create HDD](images/CreateHDD.png)
+
+### 5. Разметка, форматирование и монтирование
+Диск отформатирован в ext4 и примонтирован в /mnt/data. Настроено автомонтирование через /etc/fstab.
 
 ```bash
-sudo docker run -it --rm --network pg-net postgres:16 psql -h pg-server -U postgres -c "SELECT * FROM orders_test;"
+sudo mkfs.ext4 /dev/loop0
+sudo mkdir -p /mnt/data
+sudo mount /dev/loop0 /mnt/data
+# Добавление в fstab: /dev/loop0 /mnt/data ext4 defaults 0 2
+sudo mount -a
+df -h /mnt/data
 ```
 
-![SELECT TABLE 5](images/img-2026-10-18-19-40-04.png)
+![Скриншот Relocate Data](images/RelocateData.png)
 
-![SELECT TABLE 6](images/img-2026-10-19-13-14-06.png)
+### 6. Перенос каталога данных и назначение прав
+Каталог данных перенесен на новый диск, права назначены пользователю postgres.
+
+```bash
+sudo chown -R postgres:postgres /mnt/data
+sudo mv /var/lib/postgresql/16/main /mnt/data/
+```
+
+### 7. Изменение конфигурации (data_directory)
+В файле /etc/postgresql/16/main/postgresql.conf изменен параметр data_directory.
+Проблема и решение: При первой попытке был использован обратный слеш (\mnt\data\main), что вызвало ошибку invalid line 43. Путь был исправлен на прямой слеш (/mnt/data/main).
+
+Было:
+data_directory = '/var/lib/postgresql/16/main'
+Стало:
+#data_directory = '/var/lib/postgresql/16/main'
+data_directory = '/mnt/data/main'
+
+![Скриншот Configuration File Check](images/ConfigurationFileCheck.png)
+
+![Скриншот Check](images/Check2.png)
+
+### 8. Запуск кластера и проверка данных
+После исправления конфигурации кластер успешно запустился. Данные таблицы test сохранились.
+
+```bash
+sudo pg_ctlcluster 16 main start
+pg_lsclusters
+sudo -u postgres psql -c "SELECT * FROM test;"
+```
+
+![Скриншот StartCluster](images/StartCluster.png)
+
+![Скриншот pg_lsclusters](images/pg_lsclusters2.png)
+
+![Скриншот Select](images/Select3.png)
+
 
 ## Решенные проблемы (Troubleshooting)
-В ходе выполнения возникли следующие сложности:
+Отсутствие возможности подключить физический диск: В панели Aeza нельзя добавить отдельный диск. Решение: создан loop-диск (/disk10.img), эмулирующий физический носитель.
 
-* **Конфликт портов:** При запуске контейнера возникла ошибка *address already in use* (порт 5432). Выяснилось, что на хосте ранее был установлен локальный PostgreSQL. Проблема решена остановкой службы: `sudo systemctl stop postgresql`.
-* **Конфликт имен контейнеров:** Ошибка *Conflict. The container name "/pg-server" is already in use*. Решено удалением старого контейнера перед созданием нового: `sudo docker rm -f pg-server`.
-* **Проблема с кодировкой:** При вводе данных на кириллице в консоли `psql` появлялись «крякозябры». Для стабильной работы данные вставлены латиницей (*Ivan Petrov*, *Maria Sidorova*).
+Ошибка синтаксиса в postgresql.conf: При указании пути data_directory был использован обратный слеш (\), что привело к ошибке запуска. Решение: путь исправлен на прямой слеш (/).
+
+Автомонтирование loop-диска: Так как loop-устройства не монтируются автоматически после перезагрузки без дополнительных скриптов, запись в /etc/fstab была добавлена для выполнения задания, но в отчете отмечено, что для постоянного использования потребуется настройка скрипта инициализации.
+
