@@ -1,125 +1,105 @@
-# Домашнее задание 2: Перенос данных PostgreSQL
+# Домашнее задание 3: Логический уровень PostgreSQL
 
 ## Цель
-Перенести каталог данных PostgreSQL на дополнительный диск и восстановить работоспособность кластера при нехватке места на системном диске.
+иметь представление о логическом устройстве PostgreSQL;
+рассмотреть работу утилиты psql;
+понять, как PostgreSQL работает с данными на логическом уровне.
 
 ## Ход выполнения
 
-### 1. Установка и проверка PostgreSQL
-PostgreSQL 16 уже был установлен на ВМ (Ubuntu 24.04). Проверена работа кластера и его статус.
+### Шаг 1: Создание базы, схемы и таблицы
+Создана база `testdb`, схема `testnm` и таблица `t1` (в схеме `testnm`). Добавлена одна строка.
+*Примечание: использовался установленный PostgreSQL 16, так как версия 17 не требуется для демонстрации логики работы прав.*
 
 ```bash
-sudo apt update
-sudo apt install postgresql postgresql-contrib -y
-pg_lsclusters
+sudo -u postgres psql
 ```
-
-![Скриншот sudo apt update](images/sudo-apt-update.png)
-
-![Скриншот sudo apt install postgresql postgresql contrib -y](images/sudo-apt-install-postgresql-postgresql-contrib-y.png)
-
-![Скриншот sudo apt install postgresql postgresql contrib -y continue](images/sudo-apt-install-postgresql-postgresql-contrib-y-2.png)
-
-
-### 2. Создание тестовой таблицы
-Под пользователем postgres создана таблица test и добавлены две строки.
-
-```bash
-CREATE TABLE test (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(50)
-);
-INSERT INTO test (name) VALUES ('Row 1'), ('Row 2');
-```
-
-![Скриншот pg_lsclusters](images/pg_lsclusters.png)
 
 ![Скриншот sudo -u postgres psql](images/sudo-u-postgres-psql.png)
 
-![Скриншот Select test](images/Select-test.png)
-
-![Скриншот Insert](images/Insert.png)
-
-![Скриншот Select](images/Select2.png)
-
-
-### 3. Остановка кластера
-Кластер PostgreSQL остановлен штатной командой перед переносом данных.
-
-```bash
-sudo pg_ctlcluster 16 main stop
-pg_lsclusters
+```sql
+CREATE DATABASE testdb;
+\c testdb
+CREATE SCHEMA testnm;
+CREATE TABLE testnm.t1 (c1 INT);
+INSERT INTO testnm.t1 VALUES (1);
 ```
 
-![Скриншот Stop Cluster](images/StopCluster.png)
+![Скриншот CREATE DATABASE testdb](images/Create-DataBase-testdb.png)
+
+![Скриншот \c testdb](images/c-testdb.png)
+
+![Скриншот CREATE TABLE testnm.t1](images/Create-Table-Schema.png)
 
 
-### 4. Создание дополнительного диска (Loop-устройство)
-Важное примечание: В панели управления Aeza отсутствует возможность подключения дополнительного физического диска (доступно только расширение основного). Для выполнения задания был создан виртуальный loop-диск размером 10 ГБ, который эмулирует физический носитель.
+### 2. Создание роли readonly и пользователя testread
+Создана роль readonly, выданы права CONNECT, USAGE и SELECT. Создан пользователь testread и ему назначена роль.
 
-```bash
-sudo fallocate -l 10G /disk10.img
-sudo losetup -fP /disk10.img
+```sql
+CREATE ROLE readonly;
+GRANT CONNECT ON DATABASE testdb TO readonly;
+GRANT USAGE ON SCHEMA testnm TO readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA testnm TO readonly;
+CREATE USER testread WITH PASSWORD 'test123';
+GRANT readonly TO testread;
 ```
 
-![Скриншот Create HDD](images/CreateHDD.png)
+![Скриншот Create Role and User](images/Create-Role-and-User.png)
 
-### 5. Разметка, форматирование и монтирование
-Диск отформатирован в ext4 и примонтирован в /mnt/data. Настроено автомонтирование через /etc/fstab.
 
-```bash
-sudo mkfs.ext4 /dev/loop0
-sudo mkdir -p /mnt/data
-sudo mount /dev/loop0 /mnt/data
-# Добавление в fstab: /dev/loop0 /mnt/data ext4 defaults 0 2
-sudo mount -a
-df -h /mnt/data
+### 3. Проверка «ловушки» (без указания схемы)
+При попытке выполнить SELECT * FROM t1 под пользователем testread возникла ошибка, так как по умолчанию поиск идет в схеме public.
+
+```sql
+psql -h localhost -U testread -d testdb
+SELECT * FROM t1;
 ```
 
-![Скриншот Relocate Data](images/RelocateData.png)
+![Скриншот Connect New User](images/ConnectNewUser.png)
 
-### 6. Перенос каталога данных и назначение прав
-Каталог данных перенесен на новый диск, права назначены пользователю postgres.
+![Скриншот Select Error](images/SelectError.png)
 
-```bash
-sudo chown -R postgres:postgres /mnt/data
-sudo mv /var/lib/postgresql/16/main /mnt/data/
+При этом запрос с явным указанием схемы работает:
+
+```sql
+SELECT * FROM testnm.t1;
 ```
 
-### 7. Изменение конфигурации (data_directory)
-В файле /etc/postgresql/16/main/postgresql.conf изменен параметр data_directory.
-Проблема и решение: При первой попытке был использован обратный слеш (\mnt\data\main), что вызвало ошибку invalid line 43. Путь был исправлен на прямой слеш (/mnt/data/main).
+![Скриншот Select No Error](images/SelectNoError.png)
 
-Было:
-data_directory = '/var/lib/postgresql/16/main'
-Стало:
-#data_directory = '/var/lib/postgresql/16/main'
-data_directory = '/mnt/data/main'
 
-![Скриншот Configuration File Check](images/ConfigurationFileCheck.png)
+### 4. Настройка предсказуемого поведения (search_path)
+Чтобы обращение к t1 работало без схемы, для роли readonly изменен параметр search_path. Теперь поиск идет сначала в схеме testnm, а потом в public.
 
-![Скриншот Check](images/Check2.png)
-
-### 8. Запуск кластера и проверка данных
-После исправления конфигурации кластер успешно запустился. Данные таблицы test сохранились.
-
-```bash
-sudo pg_ctlcluster 16 main start
-pg_lsclusters
-sudo -u postgres psql -c "SELECT * FROM test;"
+```sql
+ALTER ROLE readonly SET search_path = testnm, public;
 ```
 
-![Скриншот StartCluster](images/StartCluster.png)
+![Скриншот search-path](images/search-path.png)
 
-![Скриншот pg_lsclusters](images/pg_lsclusters2.png)
 
-![Скриншот Select](images/Select3.png)
+### 5. Проверка запретов на Create и Insert
+Под пользователем testread проверена попытка создания таблицы и вставки данных. Обе операции запрещены из-за отсутствия прав.
+
+```sql
+CREATE TABLE testread_table (id INT);
+INSERT INTO testnm.t1 VALUES (2);
+```
+
+![Скриншот search-path](images/CreateReadOnly.png)
+
+После переподключения и применения search_path проверено, что чтение работает без указания схемы:
+
+```sql
+SELECT * FROM t1;
+```
+
+![Скриншот final](images/final.png)
 
 
 ## Решенные проблемы (Troubleshooting)
-Отсутствие возможности подключить физический диск: В панели Aeza нельзя добавить отдельный диск. Решение: создан loop-диск (/disk10.img), эмулирующий физический носитель.
+Ошибка relation "t1" does not exist: Возникла из-за того, что по умолчанию search_path не включает схему testnm. Решение: явное указание схемы в запросе или изменение search_path на уровне роли.
 
-Ошибка синтаксиса в postgresql.conf: При указании пути data_directory был использован обратный слеш (\), что привело к ошибке запуска. Решение: путь исправлен на прямой слеш (/).
+Запрет на CREATE TABLE: Пользователь testread не имеет прав на схему public для создания объектов, что и требовалось по условию.
 
-Автомонтирование loop-диска: Так как loop-устройства не монтируются автоматически после перезагрузки без дополнительных скриптов, запись в /etc/fstab была добавлена для выполнения задания, но в отчете отмечено, что для постоянного использования потребуется настройка скрипта инициализации.
-
+Запрет на INSERT: Роль readonly имеет только право SELECT, поэтому модификация данных невозможна.
