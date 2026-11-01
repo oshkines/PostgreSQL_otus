@@ -17,7 +17,7 @@ SHOW log_lock_waits;
 SHOW deadlock_timeout;
 ```
 
-![Настройка параметров логирования и таймаутов блокировок](images/image_pEaTlL.png)
+![Настройка параметров логирования и таймаутов блокировок](images/LogingSetting.png)
 
 ---
 
@@ -30,7 +30,7 @@ INSERT INTO lock_test VALUES (1, 'initial');
 SELECT * FROM lock_test;
 ```
 
-![Создание тестовой таблицы и вставка строки](images/image_T2s7CG.png)
+![Создание тестовой таблицы и вставка строки](images/CREATE_TABLE_lock_test.png)
 
 ---
 
@@ -42,21 +42,21 @@ SELECT * FROM lock_test;
     BEGIN;
     UPDATE lock_test SET value = 'from_session_1' WHERE id = 1;
     ```
-    ![Сессия 1: Успешный захват и обновление строки](images/image_UC9q7A.png)
+    ![Сессия 1: Успешный захват и обновление строки](images/Session1.png)
 
 *   **Сессия №2 (PID 216309):** Пытается выполнить аналогичный `UPDATE` и уходит в ожидание освобождения ресурса.
     ```sql
     BEGIN;
     UPDATE lock_test SET value = 'from_session_2' WHERE id = 1;
     ```
-    ![Сессия 2: Ожидание освобождения строки Сессией 1](images/image_nSOLQD.png)
+    ![Сессия 2: Ожидание освобождения строки Сессией 1](images/Session2.png)
 
 *   **Сессия №3 (PID 216315):** Встает в очередь вслед за Сессией №2.
     ```sql
     BEGIN;
     UPDATE lock_test SET value = 'from_session_3' WHERE id = 1;
     ```
-    ![Сессия 3: Ожидание в очереди](images/image_m42ngl.png)
+    ![Сессия 3: Ожидание в очереди](images/Session3.png)
 
 ---
 
@@ -76,7 +76,7 @@ WHERE relation = 'lock_test'::regclass
 ORDER BY pid;
 ```
 
-![Вывод системного представления pg_locks](images/image_8DOqnQ.png)
+![Вывод системного представления pg_locks](images/CREATE_TABLE_deadlock_test.png)
 
 #### Детальное объяснение структуры распределения блокировок:
 
@@ -100,7 +100,7 @@ DROP TABLE IF EXISTS deadlock_test;
 CREATE TABLE deadlock_test (id INT PRIMARY KEY, value TEXT);
 INSERT INTO deadlock_test VALUES (1, 'one'), (2, 'two');
 ```
-![Создание таблицы deadlock_test](images/image_T6S4HQ.png)
+![Создание таблицы deadlock_test](images/NoError.png)
 
 Две транзакции параллельно обновляют строки в противоположном порядке:
 1. Сессия 1 обновляет `id = 1`, затем запрашивает `id = 2`.
@@ -113,12 +113,12 @@ ERROR: deadlock detected
 DETAIL: Process 216309 waits for ShareLock on transaction 2529324; blocked by process 216133.
 Process 216133 waits for ShareLock on transaction 2529325; blocked by process 216309.
 ```
-![Фиксация ошибки дедлока в Сессии 2 при UPDATE](images/image_iXvMJf.png)
+![Фиксация ошибки дедлока в Сессии 2 при UPDATE](images/Error.png)
 
 #### Анализ инцидента по системному журналу (PostgreSQL Log)
 В лог-файле подробнейшим образом зафиксирована вся цепочка событий с указанием PID участников, номеров конфликтующих транзакций, названий таблиц и физических адресов заблокированных строк.
 
-![Анализ содержимого системного лога при UPDATE дедлоке](images/images/image_pAuE1Q.png)
+![Анализ содержимого системного лога при UPDATE дедлоке](images/Deadlock.png)
 
 **Ответ на вопрос задания:** Можно ли разобраться в случившемся постфактум? **Да, абсолютно.** Системный журнал PostgreSQL при включенном `log_lock_waits` предоставляет исчерпывающие сведения для разбора инцидентов.
 
@@ -137,7 +137,7 @@ UPDATE deadlock_test SET value = 'test' WHERE id = 2;
 ```
 Транзакция успешно захватывает первую строку и выполняет обновление второй.
 
-![Сессия 2: Захват строки id=1 через FOR UPDATE](images/image_1SS3aU.png)
+![Сессия 2: Захват строки id=1 через FOR UPDATE](images/Task3-1.png)
 
 #### Шаг 6.2: Перекрёстный запрос в Сессии №3 и дедлок
 Параллельно в Сессии №3 запускается транзакция, которая идет по зеркальному сценарию: блокирует через `FOR UPDATE` строку `id = 2` и запрашивает `UPDATE` строки `id = 1`.
@@ -155,7 +155,7 @@ Process 216133 waits for ShareLock on transaction 2529327; blocked by process 21
 CONTEXT: while updating tuple (0,1) in relation "deadlock_test"
 ```
 
-![Сессия 3: Обнаружение дедлока при явном блокировании](images/image_VxXDVw.png)
+![Сессия 3: Обнаружение дедлока при явном блокировании](images/Task3-2.png)
 
 #### Шаг 6.3: Анализ системного журнала для сценария со звёздочкой
 По логу сервера `/var/log/postgresql/postgresql-16-main.log` была полностью восстановлена хронологическая последовательность инцидента.
@@ -166,6 +166,6 @@ CONTEXT: while updating tuple (0,1) in relation "deadlock_test"
 2026-11-01 10:43:33.972 UTC [216309] ERROR: deadlock detected
 ```
 
-![Лог СУБД с фиксацией дедлока FOR UPDATE](images/image_7q3dN7.png)
+![Лог СУБД с фиксацией дедлока FOR UPDATE](images/Task3-3.png)
 
 **Вывод:** Использование конструкций явного пессимистического блокирования строк (`FOR UPDATE`) требует строгого соблюдения порядка обхода бизнес-сущностей на уровне кода приложения. Нарушение порядка вызова (например, обработка записей в разной последовательности в разных методах бэкенда) гарантированно ведет к деградации производительности СУБД и регулярным аварийным отменам транзакций из-за дедлоков.
